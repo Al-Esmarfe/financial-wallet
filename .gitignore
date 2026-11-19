@@ -1,0 +1,55 @@
+# dependências e build
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# segredos locais (o .env.example é o único versionado)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# lixo de editor / sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# logs e artefatos locais
+*.log
+logs/
+*.tar.gz
+*.zip
+*.bak
+*.tmp
+*.tmp.ts
+.stage-*
+_to_delete/
+tmp/
+
+# dados locais de containers (os volumes do compose ficam no Docker, mas
+# um bind mount local acidental não deve ir para o repositório)
+.localstack/
+volume/
+
+# arquivos de ferramentas pessoais de desenvolvimento
+AGENTS.md
+CLAUDE.md
+.claude/
+.cursor/
+.aider*
+.copilot/
+
+# anotações pessoais (roteiro de apresentação etc.)
+notas-pessoais/
+
+# snapshots do MikroORM de bancos temporários (só os dos bancos do projeto são versionados)
+src/migrations/.snapshot-*.json
+!src/migrations/.snapshot-financial_wallet.json
+!src/migrations/.snapshot-financial_wallet_test.json

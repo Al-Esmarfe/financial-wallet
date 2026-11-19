@@ -1,0 +1,107 @@
+# Uso:
+#   docker compose up -d postgres localstack                 # só dependências (app roda no host)
+#   docker compose --profile app up -d --build --scale app=3 # dependências + migrations + 3 instâncias da API
+#
+# As 3 instâncias disputam as MESMAS filas e o MESMO PostgreSQL: é o cenário
+# multi-instância que o enunciado exige. A API de cada réplica fica em uma
+# porta do intervalo 3000-3010 (docker compose ps mostra qual).
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  PORT: 3000
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-wallet_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wallet_password}
+  POSTGRES_DB: ${POSTGRES_DB:-financial_wallet}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+  SQS_ENDPOINT: http://localstack:4566
+  SQS_WAGER_TRANSACTIONS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  SQS_WAGER_TRANSACTIONS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+  SQS_WAGER_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+  SQS_WAGER_EVENTS_DLQ_URL: http://localstack:4566/000000000000/wager-events-dlq.fifo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: financial-wallet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wallet_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wallet_password}
+      POSTGRES_DB: ${POSTGRES_DB:-financial_wallet}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-wallet_user} -d ${POSTGRES_DB:-financial_wallet}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: financial-wallet-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./docker/localstack/init-queues.sh:/etc/localstack/init/ready.d/init-queues.sh
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test:
+        - CMD-SHELL
+        # Saudável só quando o init-queues.sh terminou (wager-events.fifo é a última fila criada).
+        - awslocal sqs get-queue-url --queue-name wager-events.fifo --region us-east-1 >/dev/null 2>&1 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Aplica as migrations uma única vez antes das réplicas subirem.
+  migrate:
+    profiles: ["app"]
+    build: .
+    command: ["bun", "run", "db:migrate"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    environment: *app-environment
+    ports:
+      - "3000-3010:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    # SIGTERM → shutdown cooperativo dos workers; dá tempo de terminar o lote em andamento.
+    stop_grace_period: 30s
+
+volumes:
+  postgres_data:
+  localstack_data:
